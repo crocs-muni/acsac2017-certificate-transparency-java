@@ -1,6 +1,7 @@
 package org.certificatetransparency.ctlog;
 
 import com.google.common.io.Files;
+import com.sun.org.apache.xpath.internal.operations.Bool;
 import org.bouncycastle.util.encoders.Hex;
 import org.certificatetransparency.ctlog.comm.HttpLogClient;
 import org.certificatetransparency.ctlog.proto.Ct;
@@ -187,21 +188,18 @@ public class CTLogClient {
 
           if (entry.getLogEntry().x509Entry != null) {
             byte[] leafCertBytes = entry.getLogEntry().x509Entry.leafCertificate;
-            try {
-              X509Certificate leafCert = (X509Certificate) CertificateFactory.getInstance("X509")
-                      .generateCertificate(new ByteArrayInputStream(leafCertBytes));
-              if (!"RSA".equals(leafCert.getPublicKey().getAlgorithm())) {
-                processedNotRSA++;
-                continue;
+            long timestamp = 0;
+            if (entry.getMerkleTreeLeaf() != null && entry.getMerkleTreeLeaf().timestampedEntry != null) {
+              timestamp = entry.getMerkleTreeLeaf().timestampedEntry.timestamp;
+            }
+            long certId = firstEntry + request * entriesPerRequest + idInRequest;
+            Boolean wasRsa = printCertificateIfRSA(leafCertBytes, certId, timestamp, true, ps);
+            if (wasRsa == Boolean.TRUE) processedRSA++; else processedNotRSA++;
+            if (entry.getLogEntry().x509Entry.certificateChain != null) {
+              for (byte[] otherCert : entry.getLogEntry().x509Entry.certificateChain) {
+                wasRsa = printCertificateIfRSA(otherCert, certId, timestamp, false, ps);
+                if (wasRsa == Boolean.TRUE) processedRSA++; else processedNotRSA++;
               }
-              processedRSA++;
-              long timestamp = 0;
-              if (entry.getMerkleTreeLeaf() != null && entry.getMerkleTreeLeaf().timestampedEntry != null) {
-                timestamp = entry.getMerkleTreeLeaf().timestampedEntry.timestamp;
-              }
-              ps.println(certificateToJsonString(leafCert, firstEntry + request * entriesPerRequest + idInRequest, timestamp));
-            } catch (CertificateException | InvalidNameException e) {
-              System.err.println(e.getMessage());
             }
           } else if (entry.getLogEntry().precertEntry != null) {
             System.err.println("Precertificate");
@@ -220,15 +218,31 @@ public class CTLogClient {
     }
   }
 
+  private static Boolean printCertificateIfRSA(byte[] certBytes, long certId, long timestamp, boolean leafCertificate, PrintStream output) {
+    if (certBytes == null) return null;
+    try {
+      X509Certificate leafCert = (X509Certificate) CertificateFactory.getInstance("X509")
+              .generateCertificate(new ByteArrayInputStream(certBytes));
+      if (!"RSA".equals(leafCert.getPublicKey().getAlgorithm())) {
+        return false;
+      }
+      output.println(certificateToJsonString(leafCert, certId, timestamp, leafCertificate));
+      return true;
+    } catch (CertificateException | InvalidNameException e) {
+      System.err.println(e.getMessage());
+      return null;
+    }
+  }
+
   private static String getBaseUrl(String url) {
     return String.format("http://%s/ct/v1/", url);
   }
 
-  private static String certificateToJsonString(X509Certificate cert, long certId, long timestamp) throws InvalidNameException {
-    return certificateToJsonString(cert, false, certId, timestamp);
+  private static String certificateToJsonString(X509Certificate cert, long certId, long timestamp, boolean leafCertificate) throws InvalidNameException {
+    return certificateToJsonString(cert, false, certId, timestamp, leafCertificate);
   }
 
-  private static String certificateToJsonString(X509Certificate cert, boolean oldFormat, long certId, long timestamp) throws InvalidNameException {
+  private static String certificateToJsonString(X509Certificate cert, boolean oldFormat, long certId, long timestamp, boolean leafCertificate) throws InvalidNameException {
 
     if (!"RSA".equals(cert.getPublicKey().getAlgorithm())) {
       return null;
@@ -303,6 +317,7 @@ public class CTLogClient {
       if (cnIssuer != null) jsonResult.put("issuercn", cnIssuer);
       jsonResult.put("cn", cnSubject);
       if (san != null) jsonResult.put("san", san);
+      jsonResult.put("is_leaf", leafCertificate);
     }
 
     return jsonResult.toString();
