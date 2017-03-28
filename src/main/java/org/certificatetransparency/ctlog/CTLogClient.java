@@ -14,14 +14,10 @@ import javax.naming.InvalidNameException;
 import javax.naming.ldap.LdapName;
 import javax.naming.ldap.Rdn;
 import java.io.*;
-import java.security.cert.Certificate;
-import java.security.cert.CertificateException;
-import java.security.cert.CertificateFactory;
-import java.security.cert.X509Certificate;
+import java.security.cert.*;
 import java.security.interfaces.RSAPublicKey;
 import java.text.SimpleDateFormat;
-import java.util.List;
-import java.util.ListIterator;
+import java.util.*;
 
 /**
  * The main CT log client. Currently only knows how to upload certificate chains
@@ -199,8 +195,11 @@ public class CTLogClient {
                 continue;
               }
               processedRSA++;
-              // entry.getMerkleTreeLeaf().timestampedEntry.timestamp
-              ps.println(certificateToJsonString(leafCert, firstEntry + request * entriesPerRequest + idInRequest));
+              long timestamp = 0;
+              if (entry.getMerkleTreeLeaf() != null && entry.getMerkleTreeLeaf().timestampedEntry != null) {
+                timestamp = entry.getMerkleTreeLeaf().timestampedEntry.timestamp;
+              }
+              ps.println(certificateToJsonString(leafCert, firstEntry + request * entriesPerRequest + idInRequest, timestamp));
             } catch (CertificateException | InvalidNameException e) {
               System.err.println(e.getMessage());
             }
@@ -225,11 +224,11 @@ public class CTLogClient {
     return String.format("http://%s/ct/v1/", url);
   }
 
-  private static String certificateToJsonString(X509Certificate cert, long certId) throws InvalidNameException {
-    return certificateToJsonString(cert, false, certId);
+  private static String certificateToJsonString(X509Certificate cert, long certId, long timestamp) throws InvalidNameException {
+    return certificateToJsonString(cert, false, certId, timestamp);
   }
 
-  private static String certificateToJsonString(X509Certificate cert, boolean oldFormat, long certId) throws InvalidNameException {
+  private static String certificateToJsonString(X509Certificate cert, boolean oldFormat, long certId, long timestamp) throws InvalidNameException {
 
     if (!"RSA".equals(cert.getPublicKey().getAlgorithm())) {
       return null;
@@ -242,6 +241,20 @@ public class CTLogClient {
       if ("CN".equalsIgnoreCase(rdn.getType())) {
         cnSubject = rdn.getValue().toString();
       }
+    }
+    List<String> san = null;
+    try {
+      Collection<List<?>> sanCollection = cert.getSubjectAlternativeNames();
+      if (sanCollection != null) {
+        san = new ArrayList<>(4);
+        for (List<?> list : sanCollection) {
+          for (Object o : list) {
+            if (o instanceof String) san.add((String) o);
+          }
+        }
+      }
+    } catch (CertificateParsingException e) {
+      e.printStackTrace();
     }
 
     String dnIssuer = cert.getIssuerX500Principal().getName();
@@ -274,6 +287,7 @@ public class CTLogClient {
       jsonResult.put("validity", jsonValidity);
       jsonResult.put("issuer", jsonIssuer);
       jsonResult.put("rsa_public_key", jsonRSAPublicKey);
+      jsonResult.put("timestamp", timestamp);
     } else {
       JSONArray jsonSource = new JSONArray();
       jsonSource.add(cnSubject);
@@ -285,6 +299,10 @@ public class CTLogClient {
       jsonResult.put("e", String.format("0x%s", key.getPublicExponent().toString(16)));
       jsonResult.put("count", 1);
       jsonResult.put("id", certId);
+      jsonResult.put("timestamp", timestamp);
+      if (cnIssuer != null) jsonResult.put("issuercn", cnIssuer);
+      jsonResult.put("cn", cnSubject);
+      if (san != null) jsonResult.put("san", san);
     }
 
     return jsonResult.toString();
